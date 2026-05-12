@@ -1,0 +1,10 @@
+services:
+  bridge:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: file:/app/data/bridge.db
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data

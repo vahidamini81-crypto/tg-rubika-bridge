@@ -1,0 +1,45 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model ChatPair {
+  telegramChatId String   @id
+  rubikaChatId   String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model AppState {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model RubikaProcessedUpdate {
+  updateId  String   @id
+  createdAt DateTime @default(now())
+}
+
+model MediaJob {
+  id               String   @id
+  status           String
+  telegramUpdateId Int
+  telegramFileId   String
+  sourceChatId     String
+  rubikaChatId     String
+  messageType      String
+  caption          String?
+  originalFilename String?
+  mimeType         String?
+  fileSize         Int?
+  statusMessageId  String?
+  error            String?
+  attempts         Int      @default(0)
+  retryAfter       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
