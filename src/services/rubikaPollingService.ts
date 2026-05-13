@@ -78,9 +78,9 @@ export class RubikaPollingService {
             await this.rubika.sendMessage(
               normalized.chatId,
               [
-                "Rubika bot is running and can reply.",
+                "ربات روبیکا فعال است و می‌تواند پاسخ بدهد.",
                 "",
-                "To pair this chat with Telegram, send /pair in Telegram first, then send /pair <code> here.",
+                "برای اتصال این گفت‌وگو به تلگرام، اول در تلگرام /pair را بفرستید و بعد /pair <code> را اینجا ارسال کنید.",
               ].join("\n"),
             );
             this.logger.info(

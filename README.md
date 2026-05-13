@@ -1,135 +1,165 @@
 # Telegram to Rubika Bot Bridge
 
-One-way Node.js/TypeScript MVP bridge:
+Simple one-way bridge:
 
 ```text
-Telegram user/group/channel -> Telegram Bot -> pairing store -> Rubika Bot API -> paired Rubika chat
+Telegram -> Telegram Bot -> Rubika Bot -> Rubika chat
 ```
 
-This service uses Telegram and Rubika polling. It does not need a public webhook URL.
+The app uses polling, so no public webhook URL is required.
 
-## Features
+## English
 
-- Telegram text forwarding
-- Forwarded Telegram messages treated as normal messages, with forwarded text labeled
-- Telegram photo, document, video, audio, and voice forwarding
-- Telegram Bot API hosted downloads are limited by Telegram before this bridge's
-  `MAX_FILE_MB` limit is reached; use a local Telegram Bot API server or a
-  Telegram client API downloader for large files.
-- Unsupported message fallback text
-- Pair Telegram chats with Rubika chats using one-time codes
-- Temporary media download, upload, and deletion
-- Rubika API retry with 1s, 3s, and 10s backoff
-- Rubika polling diagnostics and a health reply for non-pair messages
-- In-memory offset by default, optional tiny JSON offset file
-- Graceful shutdown on `SIGINT` and `SIGTERM`
+### Requirements
 
-## Setup
+- Telegram bot token from [BotFather](https://t.me/BotFather)
+- Rubika bot token
+- Docker and Docker Compose
+- Optional for large Telegram files: `api_id` and `api_hash` from [my.telegram.org](https://my.telegram.org)
 
-1. Create a Telegram bot with BotFather and copy the bot token.
-2. Create a Rubika bot and copy the Rubika bot token.
-3. Create `.env` with both bot tokens.
-5. Run the service:
+### `.env`
+
+Create `.env` in the project root:
+
+```env
+TG_BOT_TOKEN=123456:telegram_bot_token
+RUBIKA_BOT_TOKEN=rubika_bot_token
+LOG_LEVEL=info
+POLL_INTERVAL_MS=250
+MEDIA_WORKER_CONCURRENCY=2
+MEDIA_JOB_POLL_INTERVAL_MS=250
+RUBIKA_UPLOAD_RETRIES=6
+MAX_FILE_MB=500
+TMP_DIR=/tmp/tg-rubika-bridge
+```
+
+For local Telegram Bot API mode, also add:
+
+```env
+TELEGRAM_API_ID=123456
+TELEGRAM_API_HASH=your_api_hash
+```
+
+Get these values from `my.telegram.org`:
+
+1. Sign in with your Telegram account.
+2. Open **API development tools**.
+3. Create an app.
+4. Copy **api_id** and **api_hash**.
+
+### Deploy
+
+Normal mode:
 
 ```bash
 docker compose up -d --build
 ```
 
-6. In Telegram, send `/pair` to the Telegram bot.
-7. In Rubika, send `/pair <code>` to the Rubika bot.
-8. Send a Telegram message to the paired Telegram chat.
-9. Confirm the message appears in the paired Rubika chat.
-
-To test whether Rubika polling and replies work before pairing, send any normal
-message to the Rubika bot. It should reply with:
-
-```text
-Rubika bot is running and can reply.
-```
-
-If it does not reply, run with `LOG_LEVEL=debug` and check for Rubika
-`getUpdates`, skipped update, and API response logs.
-
-## Environment
-
-```env
-NODE_ENV=production
-LOG_LEVEL=info
-TG_BOT_TOKEN=
-TG_API_BASE_URL=
-TG_FILE_BASE_URL=
-RUBIKA_BOT_TOKEN=
-POLL_INTERVAL_MS=250
-MAX_FILE_MB=500
-TMP_DIR=/tmp/tg-rubika-bridge
-DATABASE_URL=file:./data/bridge.db
-```
-
-Pair records, Telegram offsets, Rubika processed update IDs, and media job state
-are stored in SQLite via Prisma. The default Docker Compose file overrides
-`DATABASE_URL` to `file:/app/data/bridge.db`, backed by the mounted `./data`
-directory.
-
-## Large Telegram Files
-
-Telegram's hosted Bot API rejects bot downloads larger than 20 MB. To forward
-larger files, run a local Telegram Bot API server in local mode. Get
-`TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from `https://my.telegram.org`, add
-them to `.env`, then start with:
+Large-file mode with local Telegram Bot API:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.local-bot-api.yml up -d --build
 ```
 
-The override routes bot requests to `telegram-bot-api:8081` and mounts the
-local Bot API file volume into the bridge. When `getFile` returns an absolute
-local path, the bridge uploads that file path directly to Rubika.
+Data is stored in SQLite under `./data`.
 
-Large media uploads are queued in SQLite and processed by a background worker.
-The bridge sends one Rubika status message per upload and edits it as the upload
-progresses when Rubika supports message editing. If editing fails, it sends a
-short replacement status message.
+### Pair Chats
 
-The default Docker Compose file mounts `./data:/app/data` so pairs survive container restarts.
+1. Send `/pair` to your Telegram bot.
+2. Copy the code.
+3. Send `/pair <code>` to your Rubika bot.
+4. Send a message in Telegram and check Rubika.
 
-## Local Development
+Useful commands:
+
+```text
+/pair
+/pairs
+/unpair
+```
+
+### Notes
+
+- Text, photo, video, audio, voice, and documents are forwarded.
+- Large media is queued and retried automatically.
+- Use local Telegram Bot API for faster and larger Telegram file handling.
+- Rubika status messages are edited when possible.
+- Bot tokens are read from `.env` and are not logged.
+
+## فارسی
+
+### نیازمندی‌ها
+
+- توکن ربات تلگرام از [BotFather](https://t.me/BotFather)
+- توکن ربات روبیکا
+- Docker و Docker Compose
+- اختیاری برای فایل‌های بزرگ تلگرام: `api_id` و `api_hash` از [my.telegram.org](https://my.telegram.org)
+
+### فایل `.env`
+
+در ریشه پروژه فایل `.env` بسازید:
+
+```env
+TG_BOT_TOKEN=123456:telegram_bot_token
+RUBIKA_BOT_TOKEN=rubika_bot_token
+LOG_LEVEL=info
+POLL_INTERVAL_MS=250
+MEDIA_WORKER_CONCURRENCY=2
+MEDIA_JOB_POLL_INTERVAL_MS=250
+RUBIKA_UPLOAD_RETRIES=6
+MAX_FILE_MB=500
+TMP_DIR=/tmp/tg-rubika-bridge
+```
+
+برای حالت Telegram Bot API محلی، این‌ها را هم اضافه کنید:
+
+```env
+TELEGRAM_API_ID=123456
+TELEGRAM_API_HASH=your_api_hash
+```
+
+دریافت از `my.telegram.org`:
+
+1. با حساب تلگرام وارد شوید.
+2. بخش **API development tools** را باز کنید.
+3. یک اپ بسازید.
+4. مقدارهای **api_id** و **api_hash** را بردارید.
+
+### اجرا روی سرور
+
+حالت معمولی:
 
 ```bash
-npm install
-npm run dev
+docker compose up -d --build
 ```
 
-Run checks:
+حالت فایل‌های بزرگ با Telegram Bot API محلی:
 
 ```bash
-npm run build
-npm test
+docker compose -f docker-compose.yml -f docker-compose.local-bot-api.yml up -d --build
 ```
 
-## Message Formatting
+داده‌ها در SQLite و داخل پوشه `./data` ذخیره می‌شوند.
 
-Text:
+### اتصال چت‌ها
+
+1. در تلگرام به ربات پیام `/pair` بدهید.
+2. کد را کپی کنید.
+3. در روبیکا به ربات پیام `/pair <code>` بدهید.
+4. از تلگرام پیام بفرستید و نتیجه را در روبیکا ببینید.
+
+دستورهای کاربردی:
 
 ```text
-<text>
+/pair
+/pairs
+/unpair
 ```
 
-Forwarded text:
+### نکته‌ها
 
-```text
-<text>
-```
-
-Media caption:
-
-```text
-<caption if any>
-```
-
-## Security Notes
-
-- `.env` is gitignored.
-- Bot tokens are not logged.
-- Telegram file downloads are written only to `TMP_DIR` and removed after each upload attempt.
-- User messages, file IDs, message IDs, and delivery history are not persisted.
-- The service calls Telegram `deleteWebhook` once on startup so polling can work.
+- متن، عکس، ویدیو، صدا، ویس و فایل ارسال می‌شود.
+- رسانه‌های بزرگ در صف می‌مانند و خودکار دوباره تلاش می‌شوند.
+- برای سرعت بهتر و فایل‌های بزرگ‌تر از Telegram Bot API محلی استفاده کنید.
+- پیام وضعیت در روبیکا تا حد امکان ویرایش می‌شود.
+- توکن‌ها از `.env` خوانده می‌شوند و در لاگ نوشته نمی‌شوند.

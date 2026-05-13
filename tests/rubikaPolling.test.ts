@@ -43,7 +43,7 @@ describe("RubikaPollingService", () => {
     expect(pairing.confirmRubikaPair).toHaveBeenCalledWith("rubika-chat", "hello");
     expect(rubika.sendMessage).toHaveBeenCalledWith(
       "rubika-chat",
-      expect.stringContaining("Rubika bot is running and can reply."),
+      expect.stringContaining("ربات روبیکا فعال است"),
     );
   });
 
@@ -94,7 +94,7 @@ describe("RubikaPollingService", () => {
     expect(pairing.confirmRubikaPair).toHaveBeenCalledWith("rubika-chat", "hello from rubika");
     expect(rubika.sendMessage).toHaveBeenCalledWith(
       "rubika-chat",
-      expect.stringContaining("Rubika bot is running and can reply."),
+      expect.stringContaining("ربات روبیکا فعال است"),
     );
     expect(rubika.getUpdates).toHaveBeenLastCalledWith({ offsetId: undefined, limit: 25 });
     expect(pairing.confirmRubikaPair).toHaveBeenCalledTimes(1);

@@ -1,5 +1,5 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { BridgeService, type RubikaBridgeClient, type TelegramBridgeClient } from "../src/services/bridgeService.js";
@@ -73,6 +73,7 @@ describe("BridgeService media delivery", () => {
     expect(telegram.getFile).toHaveBeenCalledWith("photo-large");
     expect(rubika.requestSendFile).toHaveBeenCalledWith("Image");
     expect(rubika.uploadFile).toHaveBeenCalledTimes(1);
+    expect(basename(vi.mocked(rubika.uploadFile).mock.calls[0]![1])).toBe("pic.jpg");
     expect(rubika.sendFile).toHaveBeenCalledWith(
       "rubika-chat",
       "rubika-file-id",
@@ -80,11 +81,7 @@ describe("BridgeService media delivery", () => {
     );
     expect(rubika.sendMessage).toHaveBeenCalledWith(
       "rubika-chat",
-      expect.stringContaining("Uploading photo to Rubika as Image"),
-    );
-    expect(rubika.sendMessage).toHaveBeenCalledWith(
-      "rubika-chat",
-      expect.stringContaining("Finished uploading photo"),
+      expect.stringContaining("ارسال عکس کامل شد"),
     );
     await expect(readdir(tmpDir)).resolves.toEqual([]);
     await rm(tmpDir, { recursive: true, force: true });
@@ -126,7 +123,7 @@ describe("BridgeService media delivery", () => {
     expect(telegram.getFile).not.toHaveBeenCalled();
     expect(rubika.sendMessage).toHaveBeenCalledWith(
       "rubika-chat",
-      expect.stringContaining("skipped because it is larger than 1 MB"),
+      expect.stringContaining("حجم آن بیشتر از 1 مگابایت است"),
     );
   });
 
@@ -168,7 +165,7 @@ describe("BridgeService media delivery", () => {
     expect(rubika.requestSendFile).not.toHaveBeenCalled();
     expect(rubika.sendMessage).toHaveBeenCalledWith(
       "rubika-chat",
-      expect.stringContaining("Telegram Bot API refused the file download as too large"),
+      expect.stringContaining("Telegram Bot API دانلود فایل را به دلیل حجم زیاد رد کرد"),
     );
   });
 
@@ -223,7 +220,7 @@ describe("BridgeService media delivery", () => {
     );
     expect(rubika.sendMessage).toHaveBeenCalledWith(
       "rubika-chat",
-      expect.stringContaining("Large files can take a few minutes"),
+      expect.stringContaining("ارسال ویدیو کامل شد"),
     );
     await expect(readdir(tmpDir)).resolves.toEqual(["movie.mp4"]);
     await rm(tmpDir, { recursive: true, force: true });
@@ -325,7 +322,7 @@ describe("BridgeService media delivery", () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it("notifies Rubika when playable upload falls back to a generic file", async () => {
+  it("does not fall back to a generic file when playable upload fails", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "tg-rubika-fallback-"));
     const localFile = join(tmpDir, "movie.mp4");
     await writeFile(localFile, "movie-bytes", "utf8");
@@ -337,12 +334,10 @@ describe("BridgeService media delivery", () => {
       sendMessage: vi.fn().mockResolvedValue(undefined),
       requestSendFile: vi
         .fn()
-        .mockResolvedValueOnce({ uploadUrl: "https://video-upload.test" })
-        .mockResolvedValueOnce({ uploadUrl: "https://file-upload.test" }),
+        .mockResolvedValueOnce({ uploadUrl: "https://video-upload.test" }),
       uploadFile: vi
         .fn()
-        .mockRejectedValueOnce(new Error("Rubika uploadFile failed with non-JSON HTTP 502"))
-        .mockResolvedValueOnce("rubika-file-id"),
+        .mockRejectedValueOnce(new Error("Rubika uploadFile failed with non-JSON HTTP 502")),
       sendFile: vi.fn().mockResolvedValue(undefined),
     };
     const bridge = new BridgeService(
@@ -354,35 +349,25 @@ describe("BridgeService media delivery", () => {
       createLogger("silent"),
     );
 
-    await bridge.processUpdate({
-      update_id: 26,
-      message: {
-        message_id: 7,
-        chat: { id: 123 },
-        video: {
-          file_id: "large-movie",
-          file_name: "movie.mp4",
-          mime_type: "video/mp4",
-          file_size: 10,
+    await expect(
+      bridge.processUpdate({
+        update_id: 26,
+        message: {
+          message_id: 7,
+          chat: { id: 123 },
+          video: {
+            file_id: "large-movie",
+            file_name: "movie.mp4",
+            mime_type: "video/mp4",
+            file_size: 10,
+          },
         },
-      },
-    });
+      }),
+    ).rejects.toThrow("Rubika uploadFile failed");
 
     expect(rubika.requestSendFile).toHaveBeenNthCalledWith(1, "Video");
-    expect(rubika.requestSendFile).toHaveBeenNthCalledWith(2, "File");
-    expect(rubika.sendMessage).toHaveBeenCalledWith(
-      "rubika-chat",
-      expect.stringContaining("Retrying as a regular file"),
-    );
-    expect(rubika.sendMessage).toHaveBeenCalledWith(
-      "rubika-chat",
-      expect.stringContaining("accepted it as a regular file"),
-    );
-    expect(rubika.sendFile).toHaveBeenCalledWith(
-      "rubika-chat",
-      "rubika-file-id",
-      "",
-    );
+    expect(rubika.requestSendFile).not.toHaveBeenCalledWith("File");
+    expect(rubika.sendFile).not.toHaveBeenCalled();
     await rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -436,7 +421,7 @@ describe("BridgeService media delivery", () => {
     );
     expect(rubika.sendMessage).toHaveBeenCalledWith(
       "rubika-chat",
-      expect.stringContaining("retrying automatically"),
+      expect.stringContaining("دوباره خودکار تلاش می‌شود"),
     );
     await rm(tmpDir, { recursive: true, force: true });
   });
@@ -491,5 +476,55 @@ describe("BridgeService media delivery", () => {
     expect(mediaJobStore.update).toHaveBeenCalledWith("job-1", { statusMessageId: "status-message" });
     expect(telegram.getFile).not.toHaveBeenCalled();
     expect(rubika.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it("edits one queued status message when a media job completes", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "tg-rubika-edit-"));
+    const telegram: TelegramBridgeClient = {
+      getFile: vi.fn().mockResolvedValue({ file_id: "song", file_path: "audio/song.mp3", file_size: 5 }),
+      getFileDownloadUrl: vi.fn().mockReturnValue("https://telegram.test/song"),
+    };
+    const rubika: RubikaBridgeClient = {
+      sendMessage: vi.fn().mockResolvedValue("status-1"),
+      editMessageText: vi.fn().mockResolvedValue(undefined),
+      requestSendFile: vi.fn().mockResolvedValue({ uploadUrl: "https://upload.test" }),
+      uploadFile: vi.fn().mockResolvedValue("rubika-audio-id"),
+      sendFile: vi.fn().mockResolvedValue(undefined),
+    };
+    const bridge = new BridgeService(
+      telegram,
+      rubika,
+      pairStore(),
+      pairing(),
+      {
+        maxFileMb: 500,
+        tmpDir,
+        fetchFn: vi.fn().mockResolvedValue(new Response(new Blob(["song"]), { status: 200 })) as typeof fetch,
+      },
+      createLogger("silent"),
+    );
+
+    await bridge.processMediaJob({
+      id: "job-2",
+      status: "queued",
+      telegramUpdateId: 28,
+      telegramFileId: "song",
+      sourceChatId: "123",
+      rubikaChatId: "rubika-chat",
+      messageType: "audio",
+      originalFilename: "song.mp3",
+      mimeType: "audio/mpeg",
+      fileSize: 5,
+      statusMessageId: "status-1",
+      attempts: 0,
+    });
+
+    expect(rubika.sendMessage).not.toHaveBeenCalled();
+    expect(rubika.editMessageText).toHaveBeenCalledWith(
+      "rubika-chat",
+      "status-1",
+      expect.stringContaining("ارسال صدا کامل شد"),
+    );
+    await rm(tmpDir, { recursive: true, force: true });
   });
 });

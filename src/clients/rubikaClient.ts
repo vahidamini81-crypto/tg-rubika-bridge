@@ -1,4 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { openAsBlob } from "node:fs";
+import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import type { AppLogger } from "../logger.js";
 import type {
@@ -11,6 +12,7 @@ import { retry } from "../utils/retry.js";
 
 type RetryConfig = {
   retries?: number;
+  uploadRetries?: number;
   delaysMs?: number[];
 };
 
@@ -86,9 +88,9 @@ export class RubikaClient {
       "Uploading file to Rubika",
     );
     return this.withRetry("uploadFile", async () => {
-      const bytes = await readFile(filePath);
       const form = new FormData();
-      form.append("file", new Blob([bytes], { type: "application/octet-stream" }), basename(filePath));
+      const file = await openAsBlob(filePath, { type: "application/octet-stream" });
+      form.append("file", file, basename(filePath));
 
       const response = await this.fetchFn(uploadUrl, {
         method: "POST",
@@ -132,7 +134,10 @@ export class RubikaClient {
 
   private withRetry<T>(operationName: string, operation: () => Promise<T>): Promise<T> {
     return retry(operation, {
-      retries: this.retryConfig.retries ?? 3,
+      retries:
+        operationName === "uploadFile"
+          ? (this.retryConfig.uploadRetries ?? 1)
+          : (this.retryConfig.retries ?? 3),
       delaysMs: this.retryConfig.delaysMs,
       onRetry: (error, attempt, delayMs) => {
         this.logger.warn({ error, attempt, delayMs, operationName }, "Retrying Rubika operation");

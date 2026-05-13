@@ -5,7 +5,6 @@ import type { NormalizedMessageType } from "../types/bridge.js";
 export type MediaJobStatus =
   | "queued"
   | "uploading"
-  | "fallback_uploading"
   | "sending"
   | "sent"
   | "failed";
@@ -32,7 +31,10 @@ export type MediaJobRecord = MediaJobInput & {
 };
 
 export class MediaJobStore {
-  constructor(private readonly prisma: AppPrismaClient) {}
+  constructor(
+    private readonly prisma: AppPrismaClient,
+    private readonly staleUploadingMs = 15 * 60 * 1000,
+  ) {}
 
   async create(input: MediaJobInput): Promise<MediaJobRecord> {
     const job = await this.prisma.mediaJob.create({
@@ -47,14 +49,47 @@ export class MediaJobStore {
 
   async claimNextQueued(): Promise<MediaJobRecord | undefined> {
     const now = new Date();
-    const job = await this.prisma.mediaJob.findFirst({
-      where: {
-        status: { in: ["queued", "uploading", "fallback_uploading", "sending"] },
-        OR: [{ retryAfter: null }, { retryAfter: { lte: now } }],
-      },
-      orderBy: { createdAt: "asc" },
-    });
-    return job ? toMediaJob(job) : undefined;
+    const staleBefore = new Date(now.getTime() - this.staleUploadingMs);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const claimed = await this.prisma.$transaction(async (tx) => {
+        const job = await tx.mediaJob.findFirst({
+          where: {
+            OR: [
+              {
+                status: "queued",
+                OR: [{ retryAfter: null }, { retryAfter: { lte: now } }],
+              },
+              {
+                status: "uploading",
+                updatedAt: { lt: staleBefore },
+              },
+            ],
+          },
+          orderBy: { createdAt: "asc" },
+        });
+        if (!job) return undefined;
+
+        const result = await tx.mediaJob.updateMany({
+          where: {
+            id: job.id,
+            status: job.status,
+            updatedAt: job.updatedAt,
+          },
+          data: {
+            status: "uploading",
+            retryAfter: null,
+          },
+        });
+        if (result.count !== 1) return undefined;
+
+        const updated = await tx.mediaJob.findUnique({ where: { id: job.id } });
+        return updated ? toMediaJob(updated) : undefined;
+      });
+      if (claimed) return claimed;
+    }
+
+    return undefined;
   }
 
   async update(
@@ -88,6 +123,7 @@ function toMediaJob(job: {
   error: string | null;
   attempts: number;
   retryAfter: Date | null;
+  updatedAt: Date;
 }): MediaJobRecord {
   return {
     id: job.id,

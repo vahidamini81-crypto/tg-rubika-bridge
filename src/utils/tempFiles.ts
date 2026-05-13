@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { randomUUID } from "node:crypto";
@@ -38,8 +38,10 @@ export async function downloadUrlToTempFile(
     throw new FileTooLargeError(options.maxBytes);
   }
 
-  const extension = extname(sanitizeFilename(options.filenameHint ?? "")) || ".bin";
-  const tempPath = join(options.tmpDir, `${randomUUID()}${extension}`);
+  const tempDir = join(options.tmpDir, randomUUID());
+  await mkdir(tempDir, { recursive: true });
+  const filename = filenameFromHint(options.filenameHint);
+  const tempPath = join(tempDir, filename);
   const file = createWriteStream(tempPath, { flags: "wx" });
   let size = 0;
 
@@ -72,9 +74,18 @@ export async function downloadUrlToTempFile(
 export async function deleteTempFile(path: string | undefined): Promise<void> {
   if (!path) return;
   await rm(path, { force: true });
+  const parent = dirname(path);
+  if (isUuidBasename(parent)) {
+    await rm(parent, { recursive: true, force: true });
+  }
 }
 
-function sanitizeFilename(filename: string): string {
-  if (!filename) return "";
-  return basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+function filenameFromHint(filename: string | undefined): string {
+  const safeName = filename ? basename(filename) : "";
+  if (safeName && safeName !== "." && safeName !== "..") return safeName;
+  return "telegram-file.bin";
+}
+
+function isUuidBasename(path: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(basename(path));
 }

@@ -39,12 +39,12 @@ export class PairingService {
       await this.telegram.sendMessage(
         telegramChatId,
         [
-          `Pair code: ${code}`,
+          `کد اتصال: ${code}`,
           "",
-          "Open Rubika, send a message to this Rubika bot, and type:",
+          "روبیکا را باز کنید، به این ربات روبیکا پیام بدهید و این دستور را بفرستید:",
           `/pair ${code}`,
           "",
-          "The code expires in 10 minutes.",
+          "این کد تا ۱۰ دقیقه معتبر است.",
         ].join("\n"),
       );
       return true;
@@ -54,7 +54,7 @@ export class PairingService {
       const removed = await this.pairStore.remove(telegramChatId);
       await this.telegram.sendMessage(
         telegramChatId,
-        removed ? "This Telegram chat is no longer paired." : "This Telegram chat was not paired.",
+        removed ? "اتصال این گفت‌وگوی تلگرام حذف شد." : "این گفت‌وگوی تلگرام متصل نبود.",
       );
       return true;
     }
@@ -64,8 +64,8 @@ export class PairingService {
       await this.telegram.sendMessage(
         telegramChatId,
         pair
-          ? `This Telegram chat is paired with Rubika chat ${pair.rubikaChatId}.`
-          : "This Telegram chat is not paired. Send /pair to create a pair code.",
+          ? `این گفت‌وگوی تلگرام به گفت‌وگوی روبیکا ${pair.rubikaChatId} متصل است.`
+          : "این گفت‌وگوی تلگرام هنوز متصل نیست. برای ساخت کد اتصال، /pair را بفرستید.",
       );
       return true;
     }
@@ -80,7 +80,7 @@ export class PairingService {
     const pending = this.pending.get(code);
     if (!pending || pending.expiresAt < Date.now()) {
       this.pending.delete(code);
-      await this.rubika.sendMessage(rubikaChatId, "Pair code is invalid or expired. Create a new /pair code in Telegram.");
+      await this.rubika.sendMessage(rubikaChatId, "کد اتصال نامعتبر است یا منقضی شده. در تلگرام یک کد جدید با /pair بسازید.");
       return true;
     }
 
@@ -90,8 +90,8 @@ export class PairingService {
     });
     this.pending.delete(code);
 
-    await this.rubika.sendMessage(rubikaChatId, "Paired. Telegram messages from that chat will be forwarded here.");
-    await this.telegram.sendMessage(pair.telegramChatId, "Paired with Rubika. Messages from this Telegram chat will be forwarded.");
+    await this.rubika.sendMessage(rubikaChatId, "اتصال انجام شد. پیام‌های آن گفت‌وگوی تلگرام به اینجا ارسال می‌شود.");
+    await this.telegram.sendMessage(pair.telegramChatId, "اتصال به روبیکا انجام شد. پیام‌های این گفت‌وگوی تلگرام ارسال می‌شود.");
     this.logger.info(
       { telegramChatId: pair.telegramChatId, rubikaChatId: pair.rubikaChatId },
       "Created Telegram/Rubika pair",
@@ -100,7 +100,7 @@ export class PairingService {
   }
 
   async notifyTelegramNotPaired(telegramChatId: string): Promise<void> {
-    await this.telegram.sendMessage(telegramChatId, "This chat is not paired yet. Send /pair to connect it to a Rubika chat.");
+    await this.telegram.sendMessage(telegramChatId, "این گفت‌وگو هنوز متصل نیست. برای اتصال به روبیکا، /pair را بفرستید.");
   }
 
   private createCode(): string {

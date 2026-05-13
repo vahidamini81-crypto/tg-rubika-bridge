@@ -36,7 +36,7 @@ export type BridgeServiceConfig = {
   fetchFn?: typeof fetch;
 };
 
-type UploadStatus = "uploaded" | "uploaded_as_file" | "failed";
+type UploadStatus = "uploaded";
 const LARGE_MEDIA_AS_FILE_THRESHOLD_BYTES = 20 * 1024 * 1024;
 const MAX_MEDIA_JOB_ATTEMPTS = 6;
 const MEDIA_JOB_RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 120_000, 300_000];
@@ -238,8 +238,7 @@ export class BridgeService {
         uploadPath = downloaded.path;
       }
 
-      await this.updateUploadStatus(chatId, message, formatUploadStartedMessage(message, fileType));
-      const uploadResult = await this.uploadToRubika(fileType, uploadPath, chatId, message);
+      const uploadResult = await this.uploadToRubika(fileType, uploadPath);
       const fileId = uploadResult.fileId;
       if (!fileId) {
         throw new Error("Rubika upload did not return file_id");
@@ -248,10 +247,11 @@ export class BridgeService {
 
       try {
         await this.rubika.sendFile(chatId, fileId, caption);
-        await this.updateUploadStatus(chatId, message, formatUploadCompleteMessage(message, uploadResult.status));
+        await this.updateUploadStatus(chatId, message, formatUploadCompleteMessage(message));
       } catch (error) {
         this.logger.error({ error, chatId }, "Failed to deliver Rubika file message");
         await this.updateUploadStatus(chatId, message, formatUploadFailedMessage(message));
+        throw error;
       }
     } catch (error) {
       if (error instanceof FileTooLargeError) {
@@ -291,16 +291,35 @@ export class BridgeService {
       mimeType: message.mimeType,
       fileSize: message.fileSize,
     });
-    const statusMessageId = await this.rubika.sendMessage(chatId, formatQueuedMessage(message));
-    if (statusMessageId) await this.mediaJobStore.update(job.id, { statusMessageId });
+    try {
+      const statusMessageId = await this.rubika.sendMessage(chatId, formatQueuedMessage(message));
+      if (statusMessageId) await this.mediaJobStore.update(job.id, { statusMessageId });
+    } catch (error) {
+      this.logger.warn({ error, jobId: job.id, chatId }, "Failed to create Rubika media status message");
+    }
   }
 
   async processMediaJob(job: MediaJobRecord): Promise<void> {
     const message = messageFromJob(job);
     await this.mediaJobStore?.update(job.id, { status: "uploading", attempts: job.attempts + 1 });
     try {
+      this.logger.info(
+        {
+          jobId: job.id,
+          telegramFileId: job.telegramFileId,
+          messageType: job.messageType,
+          attempt: job.attempts + 1,
+          rubikaChatId: job.rubikaChatId,
+        },
+        "Processing media job",
+      );
       await this.deliverMedia(message);
-      await this.mediaJobStore?.update(job.id, { status: "sent", error: null, retryAfter: null });
+      await this.mediaJobStore?.update(job.id, {
+        status: "sent",
+        statusMessageId: message.statusMessageId,
+        error: null,
+        retryAfter: null,
+      });
     } catch (error) {
       const nextAttempts = job.attempts + 1;
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -311,8 +330,22 @@ export class BridgeService {
           attempts: nextAttempts,
           error: errorMessage,
           retryAfter,
+          statusMessageId: message.statusMessageId,
         });
+        this.logger.warn(
+          {
+            error,
+            jobId: job.id,
+            telegramFileId: job.telegramFileId,
+            messageType: job.messageType,
+            attempt: nextAttempts,
+            retryAfter,
+            rubikaChatId: job.rubikaChatId,
+          },
+          "Media job failed with retryable error",
+        );
         await this.updateUploadStatus(job.rubikaChatId, message, formatUploadRetryMessage(message, retryAfter, nextAttempts));
+        await this.mediaJobStore?.update(job.id, { statusMessageId: message.statusMessageId });
         return;
       }
       await this.mediaJobStore?.update(job.id, {
@@ -320,8 +353,10 @@ export class BridgeService {
         attempts: nextAttempts,
         error: errorMessage,
         retryAfter: null,
+        statusMessageId: message.statusMessageId,
       });
       await this.updateUploadStatus(job.rubikaChatId, message, formatUploadFailedMessage(message));
+      await this.mediaJobStore?.update(job.id, { statusMessageId: message.statusMessageId });
       throw error;
     }
   }
@@ -329,24 +364,10 @@ export class BridgeService {
   private async uploadToRubika(
     fileType: RubikaFileType,
     uploadPath: string,
-    chatId: string,
-    message: NormalizedMessage,
   ): Promise<{ fileId: string; status: UploadStatus }> {
     const request = await this.rubika.requestSendFile(fileType);
-    try {
-      const uploadedFileId = await this.rubika.uploadFile(request.uploadUrl, uploadPath);
-      return { fileId: uploadedFileId || request.fileId || "", status: "uploaded" };
-    } catch (error) {
-      if (fileType === "File" || !isRubikaUploadGatewayError(error)) throw error;
-      this.logger.warn(
-        { error, fileType },
-        "Rubika playable media upload failed; retrying as generic file",
-      );
-      await this.updateUploadStatus(chatId, message, formatUploadFallbackMessage(message));
-      const fallbackRequest = await this.rubika.requestSendFile("File");
-      const fallbackFileId = await this.rubika.uploadFile(fallbackRequest.uploadUrl, uploadPath);
-      return { fileId: fallbackFileId || fallbackRequest.fileId || "", status: "uploaded_as_file" };
-    }
+    const uploadedFileId = await this.rubika.uploadFile(request.uploadUrl, uploadPath);
+    return { fileId: uploadedFileId || request.fileId || "", status: "uploaded" };
   }
 
   private async updateUploadStatus(chatId: string, message: NormalizedMessage, text: string): Promise<void> {
@@ -375,11 +396,18 @@ export class MediaJobWorker {
     private readonly mediaJobStore: MediaJobStore,
     private readonly bridge: Pick<BridgeService, "processMediaJob">,
     private readonly logger: AppLogger,
-    private readonly pollIntervalMs = 500,
+    private readonly pollIntervalMs = 250,
+    private readonly concurrency = 1,
   ) {}
 
   async start(): Promise<void> {
     this.running = true;
+    await Promise.all(
+      Array.from({ length: this.concurrency }, (_, index) => this.runLoop(index + 1)),
+    );
+  }
+
+  private async runLoop(workerId: number): Promise<void> {
     while (this.running) {
       const job = await this.mediaJobStore.claimNextQueued();
       if (!job) {
@@ -387,9 +415,10 @@ export class MediaJobWorker {
         continue;
       }
       try {
+        this.logger.debug({ workerId, jobId: job.id }, "Media worker claimed job");
         await this.bridge.processMediaJob(job);
       } catch (error) {
-        this.logger.error({ error, jobId: job.id }, "Media job failed");
+        this.logger.error({ error, workerId, jobId: job.id }, "Media job failed");
       }
     }
   }
@@ -436,9 +465,9 @@ function formatTextMessage(message: NormalizedMessage): string {
 
 function formatQueuedMessage(message: NormalizedMessage): string {
   return [
-    `Queued ${message.type} for upload.`,
-    message.originalFilename ? `File: ${message.originalFilename}` : "",
-    message.fileSize ? `Size: ${formatMegabytes(message.fileSize)}` : "",
+    `${persianTypeName(message.type)} در صف ارسال قرار گرفت.`,
+    message.originalFilename ? `نام فایل: ${message.originalFilename}` : "",
+    message.fileSize ? `اندازه: ${formatMegabytes(message.fileSize)}` : "",
   ]
     .filter((part) => part !== "")
     .join("\n");
@@ -449,13 +478,13 @@ function formatMediaCaption(message: NormalizedMessage): string {
 }
 
 function formatUnsupportedMessage(_message: NormalizedMessage): string {
-  return "Unsupported Telegram message type.";
+  return "این نوع پیام تلگرام پشتیبانی نمی‌شود.";
 }
 
 function formatSkippedFileMessage(message: NormalizedMessage, maxFileMb: number): string {
   return [
-    `Telegram ${message.type} skipped because it is larger than ${maxFileMb} MB.`,
-    message.caption ? `Caption: ${message.caption}` : "",
+    `${persianTypeName(message.type)} ارسال نشد، چون حجم آن بیشتر از ${maxFileMb} مگابایت است.`,
+    message.caption ? `متن همراه: ${message.caption}` : "",
   ]
     .filter((part) => part !== "")
     .join("\n");
@@ -463,19 +492,9 @@ function formatSkippedFileMessage(message: NormalizedMessage, maxFileMb: number)
 
 function formatTelegramDownloadLimitMessage(message: NormalizedMessage): string {
   return [
-    `Telegram ${message.type} could not be forwarded because Telegram Bot API refused the file download as too large.`,
-    "To forward large Telegram files, run a local Telegram Bot API server or use a Telegram client API downloader.",
-    message.caption ? `Caption: ${message.caption}` : "",
-  ]
-    .filter((part) => part !== "")
-    .join("\n");
-}
-
-function formatUploadStartedMessage(message: NormalizedMessage, fileType: RubikaFileType): string {
-  return [
-    `Uploading ${message.type} to Rubika as ${fileType}. Large files can take a few minutes.`,
-    message.originalFilename ? `File: ${message.originalFilename}` : "",
-    message.fileSize ? `Size: ${formatMegabytes(message.fileSize)}` : "",
+    `${persianTypeName(message.type)} ارسال نشد، چون Telegram Bot API دانلود فایل را به دلیل حجم زیاد رد کرد.`,
+    "برای ارسال فایل‌های بزرگ تلگرام، از سرور محلی Telegram Bot API یا دانلودر Telegram Client API استفاده کنید.",
+    message.caption ? `متن همراه: ${message.caption}` : "",
   ]
     .filter((part) => part !== "")
     .join("\n");
@@ -483,36 +502,46 @@ function formatUploadStartedMessage(message: NormalizedMessage, fileType: Rubika
 
 function formatUploadRetryMessage(message: NormalizedMessage, retryAfter: Date, attempts: number): string {
   return [
-    `Rubika upload for ${message.type} is still failing; retrying automatically.`,
-    `Attempt: ${attempts + 1}/${MAX_MEDIA_JOB_ATTEMPTS}`,
-    `Next retry: ${retryAfter.toISOString()}`,
+    `ارسال ${persianTypeName(message.type)} به روبیکا هنوز ناموفق است؛ دوباره خودکار تلاش می‌شود.`,
+    `تلاش بعدی: ${attempts + 1}/${MAX_MEDIA_JOB_ATTEMPTS}`,
+    `زمان تلاش بعدی: ${retryAfter.toISOString()}`,
   ].join("\n");
 }
 
-function formatUploadFallbackMessage(message: NormalizedMessage): string {
-  return [
-    `Rubika had trouble accepting this ${message.type} as playable media.`,
-    "Retrying as a regular file now.",
-  ].join("\n");
-}
-
-function formatUploadCompleteMessage(message: NormalizedMessage, status: UploadStatus): string {
-  if (status === "uploaded_as_file") {
-    return [
-      `Finished uploading ${message.type}. Rubika accepted it as a regular file.`,
-    ].join("\n");
-  }
-  return `Finished uploading ${message.type}.`;
+function formatUploadCompleteMessage(message: NormalizedMessage): string {
+  return `ارسال ${persianTypeName(message.type)} کامل شد.`;
 }
 
 function formatUploadFailedMessage(message: NormalizedMessage): string {
   return [
-    `Failed to send ${message.type} after uploading. Please try again later.`,
+    `ارسال ${persianTypeName(message.type)} ناموفق بود. لطفاً بعداً دوباره تلاش کنید.`,
   ].join("\n");
 }
 
 function formatMegabytes(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} مگابایت`;
+}
+
+function persianTypeName(type: NormalizedMessage["type"]): string {
+  switch (type) {
+    case "photo":
+      return "عکس";
+    case "document":
+      return "فایل";
+    case "video":
+      return "ویدیو";
+    case "animation":
+      return "انیمیشن";
+    case "audio":
+      return "صدا";
+    case "voice":
+      return "ویس";
+    case "text":
+      return "متن";
+    case "unsupported":
+    default:
+      return "پیام";
+  }
 }
 
 function messageFromJob(job: MediaJobRecord): NormalizedMessage {
@@ -539,7 +568,7 @@ function initialRubikaFileType(message: NormalizedMessage): RubikaFileType {
 }
 
 function isRetryableMediaJobError(error: unknown): boolean {
-  return isRubikaUploadGatewayError(error);
+  return isRubikaTransientError(error);
 }
 
 function mediaJobRetryDelayMs(attempts: number): number {
@@ -550,11 +579,14 @@ function isTelegramFileTooBigError(error: unknown): boolean {
   return error instanceof Error && error.message.toLowerCase().includes("file is too big");
 }
 
-function isRubikaUploadGatewayError(error: unknown): boolean {
+function isRubikaTransientError(error: unknown): boolean {
   return (
     error instanceof Error &&
-    error.message.includes("Rubika uploadFile failed") &&
-    (error.message.includes("HTTP 502") || error.message.includes("HTTP 504"))
+    error.message.includes("Rubika ") &&
+    (error.message.includes("HTTP 500") ||
+      error.message.includes("HTTP 502") ||
+      error.message.includes("HTTP 503") ||
+      error.message.includes("HTTP 504"))
   );
 }
 

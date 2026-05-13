@@ -17,6 +17,9 @@ const envSchema = z.object({
   RUBIKA_BOT_TOKEN: z.string().min(1),
   DATABASE_URL: z.string().min(1).default("file:./data/bridge.db"),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(250),
+  MEDIA_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
+  MEDIA_JOB_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(250),
+  RUBIKA_UPLOAD_RETRIES: z.coerce.number().int().min(0).max(10).default(6),
   MAX_FILE_MB: z.coerce.number().positive().default(500),
   TMP_DIR: z.string().min(1).default("/tmp/tg-rubika-bridge"),
 });

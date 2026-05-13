@@ -20,7 +20,9 @@ const telegram = new TelegramClient(config.TG_BOT_TOKEN, fetch, {
   apiBaseUrl: config.TG_API_BASE_URL,
   fileBaseUrl: config.TG_FILE_BASE_URL,
 });
-const rubika = new RubikaClient(config.RUBIKA_BOT_TOKEN, logger);
+const rubika = new RubikaClient(config.RUBIKA_BOT_TOKEN, logger, fetch, {
+  uploadRetries: config.RUBIKA_UPLOAD_RETRIES,
+});
 const offsetStore = new PrismaOffsetStore(prisma);
 const pairStore = new PairStore(prisma);
 const rubikaProcessedStore = new PrismaProcessedUpdateStore(prisma);
@@ -54,7 +56,13 @@ const rubikaPolling = new RubikaPollingService(
   config.POLL_INTERVAL_MS,
   rubikaProcessedStore,
 );
-const mediaWorker = new MediaJobWorker(mediaJobStore, bridge, logger);
+const mediaWorker = new MediaJobWorker(
+  mediaJobStore,
+  bridge,
+  logger,
+  config.MEDIA_JOB_POLL_INTERVAL_MS,
+  config.MEDIA_WORKER_CONCURRENCY,
+);
 
 function shutdown(signal: NodeJS.Signals): void {
   logger.info({ signal }, "Shutdown signal received");
