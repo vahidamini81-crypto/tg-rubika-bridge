@@ -20,7 +20,7 @@ export async function downloadUrlToTempFile(
   url: string,
   options: {
     tmpDir: string;
-    maxBytes: number;
+    maxBytes?: number;
     filenameHint?: string;
     fetchFn?: typeof fetch;
   },
@@ -34,7 +34,7 @@ export async function downloadUrlToTempFile(
   }
 
   const contentLength = response.headers.get("content-length");
-  if (contentLength && Number(contentLength) > options.maxBytes) {
+  if (options.maxBytes !== undefined && contentLength && Number(contentLength) > options.maxBytes) {
     throw new FileTooLargeError(options.maxBytes);
   }
 
@@ -50,7 +50,7 @@ export async function downloadUrlToTempFile(
     for await (const chunk of stream) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += buffer.length;
-      if (size > options.maxBytes) {
+      if (options.maxBytes !== undefined && size > options.maxBytes) {
         throw new FileTooLargeError(options.maxBytes);
       }
       if (!file.write(buffer)) {

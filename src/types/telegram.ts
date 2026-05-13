@@ -94,6 +94,10 @@ export type TelegramFile = {
   file_path?: string;
 };
 
+export type TelegramSentMessage = {
+  message_id: number;
+};
+
 export type TelegramApiResponse<T> = {
   ok: boolean;
   result?: T;

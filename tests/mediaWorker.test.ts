@@ -9,9 +9,12 @@ function job(id: string): MediaJobRecord {
     status: "uploading",
     telegramUpdateId: Number(id.replace(/\D/g, "")) || 1,
     telegramFileId: `file-${id}`,
+    lane: "public",
     sourceChatId: "telegram-chat",
+    telegramUserId: 2,
     rubikaChatId: "rubika-chat",
     messageType: "video",
+    isForwarded: false,
     attempts: 0,
   };
 }

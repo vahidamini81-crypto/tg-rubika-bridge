@@ -19,6 +19,13 @@ model AppState {
   updatedAt DateTime @updatedAt
 }
 
+model PendingPair {
+  code           String   @id
+  telegramChatId String
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+}
+
 model RubikaProcessedUpdate {
   updateId  String   @id
   createdAt DateTime @default(now())
@@ -27,15 +34,21 @@ model RubikaProcessedUpdate {
 model MediaJob {
   id               String   @id
   status           String
+  lane             String   @default("public")
   telegramUpdateId Int
-  telegramFileId   String
+  telegramFileId   String?
   sourceChatId     String
+  telegramUserId   Int?
+  sourceMessageId  Int?
+  senderDisplayName String?
   rubikaChatId     String
   messageType      String
+  text             String?
   caption          String?
   originalFilename String?
   mimeType         String?
   fileSize         Int?
+  isForwarded      Boolean  @default(false)
   statusMessageId  String?
   error            String?
   attempts         Int      @default(0)

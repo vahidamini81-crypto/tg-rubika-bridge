@@ -13,6 +13,7 @@ export type NormalizedMessage = {
   telegramUpdateId: number;
   sourceChatId: string;
   sourceMessageId?: number;
+  telegramUserId?: number;
   senderDisplayName?: string;
   type: NormalizedMessageType;
   text?: string;

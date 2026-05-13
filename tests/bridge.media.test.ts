@@ -22,6 +22,9 @@ function pairing(): PairingService {
   return {
     handleTelegramCommand: vi.fn().mockResolvedValue(false),
     notifyTelegramNotPaired: vi.fn().mockResolvedValue(undefined),
+    notifyTelegramQueueFull: vi.fn().mockResolvedValue(undefined),
+    refreshTelegramStatus: vi.fn().mockResolvedValue(undefined),
+    isAdmin: vi.fn().mockReturnValue(false),
   } as unknown as PairingService;
 }
 
@@ -125,6 +128,52 @@ describe("BridgeService media delivery", () => {
       "rubika-chat",
       expect.stringContaining("حجم آن بیشتر از 1 مگابایت است"),
     );
+  });
+
+  it("does not apply the public file size limit to admin media jobs", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "tg-rubika-admin-"));
+    const localFile = join(tmpDir, "admin-movie.mp4");
+    await writeFile(localFile, "movie-bytes", "utf8");
+    const telegram: TelegramBridgeClient = {
+      getFile: vi.fn().mockResolvedValue({ file_id: "large-admin-movie", file_path: localFile, file_size: 200 * 1024 * 1024 }),
+      getFileDownloadUrl: vi.fn(),
+    };
+    const rubika: RubikaBridgeClient = {
+      sendMessage: vi.fn(),
+      requestSendFile: vi.fn().mockResolvedValue({ uploadUrl: "https://upload.test" }),
+      uploadFile: vi.fn().mockResolvedValue("rubika-admin-video-id"),
+      sendFile: vi.fn().mockResolvedValue(undefined),
+    };
+    const bridge = new BridgeService(
+      telegram,
+      rubika,
+      pairStore(),
+      {
+        ...pairing(),
+        isAdmin: vi.fn().mockReturnValue(true),
+      } as unknown as PairingService,
+      { publicMaxFileMb: 1, tmpDir },
+      createLogger("silent"),
+    );
+
+    await bridge.processMediaJob({
+      id: "admin-job-1",
+      status: "queued",
+      lane: "admin",
+      telegramUpdateId: 29,
+      telegramFileId: "large-admin-movie",
+      sourceChatId: "123",
+      telegramUserId: 111,
+      rubikaChatId: "rubika-chat",
+      messageType: "video",
+      fileSize: 200 * 1024 * 1024,
+      isForwarded: false,
+      attempts: 0,
+    });
+
+    expect(rubika.uploadFile).toHaveBeenCalledWith("https://upload.test", localFile);
+    expect(rubika.sendFile).toHaveBeenCalledWith("rubika-chat", "rubika-admin-video-id", "");
+    await rm(tmpDir, { recursive: true, force: true });
   });
 
   it("reports Telegram Bot API download limits without failing the update", async () => {
@@ -403,10 +452,13 @@ describe("BridgeService media delivery", () => {
       status: "queued",
       telegramUpdateId: 1,
       telegramFileId: "large-movie",
+      lane: "public",
       sourceChatId: "123",
+      telegramUserId: 2,
       rubikaChatId: "rubika-chat",
       messageType: "video",
       fileSize: 38 * 1024 * 1024,
+      isForwarded: false,
       attempts: 0,
     });
 
@@ -439,6 +491,8 @@ describe("BridgeService media delivery", () => {
     };
     const mediaJobStore = {
       create: vi.fn().mockResolvedValue({ id: "job-1" }),
+      countWaiting: vi.fn().mockResolvedValue(0),
+      countWaitingAhead: vi.fn().mockResolvedValue(0),
       update: vi.fn().mockResolvedValue(undefined),
     } as unknown as MediaJobStore;
     const bridge = new BridgeService(
@@ -469,8 +523,10 @@ describe("BridgeService media delivery", () => {
       expect.objectContaining({
         telegramUpdateId: 27,
         telegramFileId: "large-movie",
+        lane: "public",
         rubikaChatId: "rubika-chat",
         messageType: "video",
+        isForwarded: false,
       }),
     );
     expect(mediaJobStore.update).toHaveBeenCalledWith("job-1", { statusMessageId: "status-message" });
@@ -509,12 +565,15 @@ describe("BridgeService media delivery", () => {
       status: "queued",
       telegramUpdateId: 28,
       telegramFileId: "song",
+      lane: "public",
       sourceChatId: "123",
+      telegramUserId: 2,
       rubikaChatId: "rubika-chat",
       messageType: "audio",
       originalFilename: "song.mp3",
       mimeType: "audio/mpeg",
       fileSize: 5,
+      isForwarded: false,
       statusMessageId: "status-1",
       attempts: 0,
     });

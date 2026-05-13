@@ -13,7 +13,7 @@ import { chunkText } from "../utils/chunkText.js";
 import { isMediaMessage, toRubikaFileType } from "../utils/mediaType.js";
 import { deleteTempFile, downloadUrlToTempFile, FileTooLargeError } from "../utils/tempFiles.js";
 import { sleep } from "../utils/retry.js";
-import type { MediaJobRecord, MediaJobStore } from "./mediaJobStore.js";
+import type { MediaJobLane, MediaJobRecord, MediaJobStore } from "./mediaJobStore.js";
 import type { PairStore } from "./pairStore.js";
 import type { PairingService } from "./pairingService.js";
 
@@ -31,15 +31,18 @@ export type RubikaBridgeClient = {
 };
 
 export type BridgeServiceConfig = {
-  maxFileMb: number;
+  publicMaxFileMb?: number;
+  adminMaxFileMb?: number;
+  maxFileMb?: number;
   tmpDir: string;
+  publicQueueMaxWaiting?: number;
   fetchFn?: typeof fetch;
 };
 
 type UploadStatus = "uploaded";
 const LARGE_MEDIA_AS_FILE_THRESHOLD_BYTES = 20 * 1024 * 1024;
 const MAX_MEDIA_JOB_ATTEMPTS = 6;
-const MEDIA_JOB_RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 120_000, 300_000];
+const MEDIA_JOB_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 10_000, 10_000];
 
 export class BridgeService {
   constructor(
@@ -142,9 +145,15 @@ export class BridgeService {
     if (normalized.type === "text" && normalized.text) {
       const handled = await this.pairing.handleTelegramCommand(
         normalized.sourceChatId,
+        normalized.telegramUserId,
         normalized.text,
       );
       if (handled) return;
+    }
+
+    if (this.mediaJobStore) {
+      await this.enqueueDelivery(normalized);
+      return;
     }
 
     if (normalized.type === "text") {
@@ -157,11 +166,6 @@ export class BridgeService {
       return;
     }
 
-    if (this.mediaJobStore) {
-      await this.enqueueMedia(normalized);
-      return;
-    }
-
     await this.deliverMedia(normalized);
   }
 
@@ -171,6 +175,7 @@ export class BridgeService {
       telegramUpdateId: updateId,
       sourceChatId: String(message.chat.id),
       sourceMessageId: message.message_id,
+      telegramUserId: message.from?.id,
       senderDisplayName: displayName(message),
       isForwarded: Boolean(
         message.forward_origin ??
@@ -202,9 +207,10 @@ export class BridgeService {
       return;
     }
 
-    const maxBytes = Math.floor(this.config.maxFileMb * 1024 * 1024);
-    if (message.fileSize !== undefined && message.fileSize > maxBytes) {
-      await this.deliverText(message, formatSkippedFileMessage(message, this.config.maxFileMb));
+    const maxFileMb = this.maxFileMbForMessage(message);
+    const maxBytes = maxFileMb === undefined ? undefined : Math.floor(maxFileMb * 1024 * 1024);
+    if (maxFileMb !== undefined && maxBytes !== undefined && message.fileSize !== undefined && message.fileSize > maxBytes) {
+      await this.deliverText(message, formatSkippedFileMessage(message, maxFileMb));
       return;
     }
 
@@ -218,8 +224,8 @@ export class BridgeService {
       if (!telegramFile.file_path) {
         throw new Error("Telegram getFile did not return file_path");
       }
-      if (telegramFile.file_size !== undefined && telegramFile.file_size > maxBytes) {
-        await this.deliverText(message, formatSkippedFileMessage(message, this.config.maxFileMb));
+      if (maxFileMb !== undefined && maxBytes !== undefined && telegramFile.file_size !== undefined && telegramFile.file_size > maxBytes) {
+        await this.deliverText(message, formatSkippedFileMessage(message, maxFileMb));
         return;
       }
 
@@ -255,7 +261,7 @@ export class BridgeService {
       }
     } catch (error) {
       if (error instanceof FileTooLargeError) {
-        await this.deliverText(message, formatSkippedFileMessage(message, this.config.maxFileMb));
+        await this.deliverText(message, formatSkippedFileMessage(message, bytesToMegabytes(error.maxBytes)));
         return;
       }
       if (isTelegramFileTooBigError(error)) {
@@ -276,26 +282,50 @@ export class BridgeService {
     return undefined;
   }
 
-  private async enqueueMedia(message: NormalizedMessage): Promise<void> {
-    if (!this.mediaJobStore || !message.telegramFileId) return;
+  private maxFileMbForMessage(message: NormalizedMessage): number | undefined {
+    if (this.pairing.isAdmin(message.telegramUserId)) return this.config.adminMaxFileMb;
+    return this.config.publicMaxFileMb ?? this.config.maxFileMb ?? 100;
+  }
+
+  private async enqueueDelivery(message: NormalizedMessage): Promise<void> {
+    if (!this.mediaJobStore) return;
     const chatId = await this.destinationChatId(message);
     if (!chatId) return;
+    const lane: MediaJobLane = this.pairing.isAdmin(message.telegramUserId) ? "admin" : "public";
+    if (lane === "public") {
+      const waiting = await this.mediaJobStore.countWaiting("public");
+      const maxWaiting = this.config.publicQueueMaxWaiting ?? 25;
+      if (waiting >= maxWaiting) {
+        await this.pairing.notifyTelegramQueueFull(message.sourceChatId, maxWaiting);
+        await this.pairing.refreshTelegramStatus(message.sourceChatId);
+        return;
+      }
+    }
     const job = await this.mediaJobStore.create({
+      lane,
       telegramUpdateId: message.telegramUpdateId,
       telegramFileId: message.telegramFileId,
       sourceChatId: message.sourceChatId,
+      telegramUserId: message.telegramUserId,
+      sourceMessageId: message.sourceMessageId,
+      senderDisplayName: message.senderDisplayName,
       rubikaChatId: chatId,
       messageType: message.type,
+      text: message.text,
       caption: message.caption,
       originalFilename: message.originalFilename,
       mimeType: message.mimeType,
       fileSize: message.fileSize,
+      isForwarded: message.isForwarded,
     });
     try {
-      const statusMessageId = await this.rubika.sendMessage(chatId, formatQueuedMessage(message));
+      const position = (await this.mediaJobStore.countWaitingAhead(lane, new Date())) + 1;
+      const statusMessageId = await this.rubika.sendMessage(chatId, formatQueuedMessage(message, lane, position));
       if (statusMessageId) await this.mediaJobStore.update(job.id, { statusMessageId });
+      await this.pairing.refreshTelegramStatus(message.sourceChatId);
     } catch (error) {
-      this.logger.warn({ error, jobId: job.id, chatId }, "Failed to create Rubika media status message");
+      this.logger.warn({ error, jobId: job.id, chatId }, "Failed to create Rubika queue status message");
+      await this.pairing.refreshTelegramStatus(message.sourceChatId);
     }
   }
 
@@ -303,6 +333,32 @@ export class BridgeService {
     const message = messageFromJob(job);
     await this.mediaJobStore?.update(job.id, { status: "uploading", attempts: job.attempts + 1 });
     try {
+      if (message.type === "text") {
+        await this.rubika.sendMessage(job.rubikaChatId, formatTextMessage(message));
+        await this.updateUploadStatus(job.rubikaChatId, message, "ارسال پیام کامل شد.");
+        await this.mediaJobStore?.update(job.id, {
+          status: "sent",
+          statusMessageId: message.statusMessageId,
+          error: null,
+          retryAfter: null,
+        });
+        await this.pairing.refreshTelegramStatus(job.sourceChatId);
+        return;
+      }
+
+      if (!isMediaMessage(message.type)) {
+        await this.rubika.sendMessage(job.rubikaChatId, formatUnsupportedMessage(message));
+        await this.updateUploadStatus(job.rubikaChatId, message, "ارسال پیام کامل شد.");
+        await this.mediaJobStore?.update(job.id, {
+          status: "sent",
+          statusMessageId: message.statusMessageId,
+          error: null,
+          retryAfter: null,
+        });
+        await this.pairing.refreshTelegramStatus(job.sourceChatId);
+        return;
+      }
+
       this.logger.info(
         {
           jobId: job.id,
@@ -320,6 +376,7 @@ export class BridgeService {
         error: null,
         retryAfter: null,
       });
+      await this.pairing.refreshTelegramStatus(job.sourceChatId);
     } catch (error) {
       const nextAttempts = job.attempts + 1;
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -346,6 +403,7 @@ export class BridgeService {
         );
         await this.updateUploadStatus(job.rubikaChatId, message, formatUploadRetryMessage(message, retryAfter, nextAttempts));
         await this.mediaJobStore?.update(job.id, { statusMessageId: message.statusMessageId });
+        await this.pairing.refreshTelegramStatus(job.sourceChatId);
         return;
       }
       await this.mediaJobStore?.update(job.id, {
@@ -355,8 +413,9 @@ export class BridgeService {
         retryAfter: null,
         statusMessageId: message.statusMessageId,
       });
-      await this.updateUploadStatus(job.rubikaChatId, message, formatUploadFailedMessage(message));
+      await this.updateUploadStatus(job.rubikaChatId, message, formatUploadFailedMessage(message, error));
       await this.mediaJobStore?.update(job.id, { statusMessageId: message.statusMessageId });
+      await this.pairing.refreshTelegramStatus(job.sourceChatId);
       throw error;
     }
   }
@@ -398,6 +457,7 @@ export class MediaJobWorker {
     private readonly logger: AppLogger,
     private readonly pollIntervalMs = 250,
     private readonly concurrency = 1,
+    private readonly lane: MediaJobLane = "public",
   ) {}
 
   async start(): Promise<void> {
@@ -409,7 +469,7 @@ export class MediaJobWorker {
 
   private async runLoop(workerId: number): Promise<void> {
     while (this.running) {
-      const job = await this.mediaJobStore.claimNextQueued();
+      const job = await this.mediaJobStore.claimNextQueued(this.lane);
       if (!job) {
         await sleep(this.pollIntervalMs);
         continue;
@@ -463,9 +523,21 @@ function formatTextMessage(message: NormalizedMessage): string {
   return message.text ?? "";
 }
 
-function formatQueuedMessage(message: NormalizedMessage): string {
+function formatQueuedMessage(message: NormalizedMessage, lane: MediaJobLane, position: number): string {
+  if (lane === "admin") {
+    return [
+      `${persianTypeName(message.type)} در صف ویژه ادمین قرار گرفت.`,
+      `جایگاه فعلی: ${position}`,
+      message.originalFilename ? `نام فایل: ${message.originalFilename}` : "",
+      message.fileSize ? `اندازه: ${formatMegabytes(message.fileSize)}` : "",
+    ]
+      .filter((part) => part !== "")
+      .join("\n");
+  }
+
   return [
-    `${persianTypeName(message.type)} در صف ارسال قرار گرفت.`,
+    `${persianTypeName(message.type)} شما در صف ارسال است.`,
+    `جایگاه فعلی: ${position}`,
     message.originalFilename ? `نام فایل: ${message.originalFilename}` : "",
     message.fileSize ? `اندازه: ${formatMegabytes(message.fileSize)}` : "",
   ]
@@ -512,14 +584,22 @@ function formatUploadCompleteMessage(message: NormalizedMessage): string {
   return `ارسال ${persianTypeName(message.type)} کامل شد.`;
 }
 
-function formatUploadFailedMessage(message: NormalizedMessage): string {
-  return [
-    `ارسال ${persianTypeName(message.type)} ناموفق بود. لطفاً بعداً دوباره تلاش کنید.`,
-  ].join("\n");
+function formatUploadFailedMessage(message: NormalizedMessage, error?: unknown): string {
+  if (isRubikaUploadTooLargeError(error)) {
+    return [
+      `ارسال ${persianTypeName(message.type)} ناموفق بود.`,
+      "روبیکا این فایل را به دلیل حجم زیاد در مرحله آپلود رد کرد؛ تلاش دوباره با همین فایل معمولاً کمکی نمی‌کند.",
+    ].join("\n");
+  }
+  return `ارسال ${persianTypeName(message.type)} ناموفق بود. لطفاً بعداً دوباره تلاش کنید.`;
 }
 
 function formatMegabytes(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} مگابایت`;
+  return `${bytesToMegabytes(bytes).toFixed(1)} مگابایت`;
+}
+
+function bytesToMegabytes(bytes: number): number {
+  return bytes / 1024 / 1024;
 }
 
 function persianTypeName(type: NormalizedMessage["type"]): string {
@@ -549,13 +629,17 @@ function messageFromJob(job: MediaJobRecord): NormalizedMessage {
     sourcePlatform: "telegram",
     telegramUpdateId: job.telegramUpdateId,
     sourceChatId: job.sourceChatId,
+    telegramUserId: job.telegramUserId,
+    sourceMessageId: job.sourceMessageId,
     type: job.messageType,
+    text: job.text,
     caption: job.caption,
     telegramFileId: job.telegramFileId,
     originalFilename: job.originalFilename,
     mimeType: job.mimeType,
     fileSize: job.fileSize,
-    isForwarded: false,
+    senderDisplayName: job.senderDisplayName,
+    isForwarded: job.isForwarded,
     statusMessageId: job.statusMessageId,
   };
 }
@@ -572,7 +656,7 @@ function isRetryableMediaJobError(error: unknown): boolean {
 }
 
 function mediaJobRetryDelayMs(attempts: number): number {
-  return MEDIA_JOB_RETRY_DELAYS_MS[Math.min(attempts - 1, MEDIA_JOB_RETRY_DELAYS_MS.length - 1)] ?? 300_000;
+  return MEDIA_JOB_RETRY_DELAYS_MS[Math.min(attempts - 1, MEDIA_JOB_RETRY_DELAYS_MS.length - 1)] ?? 10_000;
 }
 
 function isTelegramFileTooBigError(error: unknown): boolean {
@@ -587,6 +671,14 @@ function isRubikaTransientError(error: unknown): boolean {
       error.message.includes("HTTP 502") ||
       error.message.includes("HTTP 503") ||
       error.message.includes("HTTP 504"))
+  );
+}
+
+function isRubikaUploadTooLargeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("Rubika ") &&
+    (error.message.includes("HTTP 413") || error.message.includes("Request Entity Too Large"))
   );
 }
 

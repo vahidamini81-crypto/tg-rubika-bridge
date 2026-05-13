@@ -1,4 +1,4 @@
-import type { TelegramApiResponse, TelegramFile, TelegramUpdate } from "../types/telegram.js";
+import type { TelegramApiResponse, TelegramFile, TelegramSentMessage, TelegramUpdate } from "../types/telegram.js";
 
 export type TelegramGetUpdatesParams = {
   timeout: number;
@@ -32,9 +32,18 @@ export class TelegramClient {
     return this.post<TelegramFile>("getFile", { file_id: fileId });
   }
 
-  async sendMessage(chatId: string, text: string): Promise<void> {
-    await this.post<unknown>("sendMessage", {
+  async sendMessage(chatId: string, text: string): Promise<number | undefined> {
+    const message = await this.post<TelegramSentMessage>("sendMessage", {
       chat_id: chatId,
+      text,
+    });
+    return message.message_id;
+  }
+
+  async editMessageText(chatId: string, messageId: number, text: string): Promise<void> {
+    await this.post<unknown>("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
       text,
     });
   }
