@@ -88,6 +88,14 @@ Useful commands:
 
 ## فارسی
 
+پل ساده یک‌طرفه:
+
+```text
+Telegram -> Telegram Bot -> Rubika Bot -> Rubika chat
+```
+
+برنامه با polling کار می‌کند، پس به آدرس webhook عمومی نیاز ندارد.
+
 ### نیازمندی‌ها
 
 - توکن ربات تلگرام از [BotFather](https://t.me/BotFather)
