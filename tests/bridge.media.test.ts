@@ -169,6 +169,7 @@ describe("BridgeService media delivery", () => {
       fileSize: 200 * 1024 * 1024,
       isForwarded: false,
       attempts: 0,
+      createdAt: new Date("2026-05-13T00:00:00.000Z"),
     });
 
     expect(rubika.uploadFile).toHaveBeenCalledWith("https://upload.test", localFile);
@@ -460,6 +461,7 @@ describe("BridgeService media delivery", () => {
       fileSize: 38 * 1024 * 1024,
       isForwarded: false,
       attempts: 0,
+      createdAt: new Date("2026-05-13T00:00:00.000Z"),
     });
 
     expect(mediaJobStore.update).toHaveBeenCalledWith(
@@ -490,7 +492,7 @@ describe("BridgeService media delivery", () => {
       sendFile: vi.fn(),
     };
     const mediaJobStore = {
-      create: vi.fn().mockResolvedValue({ id: "job-1" }),
+      create: vi.fn().mockResolvedValue({ id: "job-1", createdAt: new Date("2026-05-13T00:00:00.000Z") }),
       countWaiting: vi.fn().mockResolvedValue(0),
       countWaitingAhead: vi.fn().mockResolvedValue(0),
       update: vi.fn().mockResolvedValue(undefined),
@@ -576,6 +578,7 @@ describe("BridgeService media delivery", () => {
       isForwarded: false,
       statusMessageId: "status-1",
       attempts: 0,
+      createdAt: new Date("2026-05-13T00:00:00.000Z"),
     });
 
     expect(rubika.sendMessage).not.toHaveBeenCalled();

@@ -142,10 +142,11 @@ describe("BridgeService text delivery", () => {
 
   it("queues Telegram text when a job store is configured", async () => {
     const sendMessage = vi.fn().mockResolvedValue("status-message");
+    const createdAt = new Date("2026-05-13T00:00:00.000Z");
     const mediaJobStore = {
       countWaiting: vi.fn().mockResolvedValue(0),
       countWaitingAhead: vi.fn().mockResolvedValue(0),
-      create: vi.fn().mockResolvedValue({ id: "job-1" }),
+      create: vi.fn().mockResolvedValue({ id: "job-1", createdAt }),
       update: vi.fn().mockResolvedValue(undefined),
     } as unknown as MediaJobStore;
     const bridge = new BridgeService(
@@ -187,6 +188,7 @@ describe("BridgeService text delivery", () => {
         text: "queued text",
       }),
     );
+    expect(mediaJobStore.countWaitingAhead).toHaveBeenCalledWith("public", createdAt);
     expect(sendMessage).toHaveBeenCalledWith("rubika-chat", expect.stringContaining("جایگاه فعلی: 1"));
   });
 
@@ -195,7 +197,7 @@ describe("BridgeService text delivery", () => {
     const mediaJobStore = {
       countWaiting: vi.fn().mockResolvedValue(25),
       countWaitingAhead: vi.fn().mockResolvedValue(0),
-      create: vi.fn().mockResolvedValue({ id: "job-1" }),
+      create: vi.fn().mockResolvedValue({ id: "job-1", createdAt: new Date("2026-05-13T00:00:00.000Z") }),
       update: vi.fn().mockResolvedValue(undefined),
     } as unknown as MediaJobStore;
     const bridge = new BridgeService(

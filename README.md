@@ -8,6 +8,11 @@ Telegram -> Telegram Bot -> Rubika Bot -> Rubika chat
 
 The app uses polling, so no public webhook URL is required.
 
+Cloudflare Workers single-file deployment is documented separately in
+[WORKER_DEPLOYMENT.md](./WORKER_DEPLOYMENT.md). Use that guide if you want to
+upload [`worker.js`](./worker.js) to Cloudflare instead of running the Docker
+version.
+
 ## English
 
 ### Requirements

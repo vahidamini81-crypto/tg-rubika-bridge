@@ -319,7 +319,7 @@ export class BridgeService {
       isForwarded: message.isForwarded,
     });
     try {
-      const position = (await this.mediaJobStore.countWaitingAhead(lane, new Date())) + 1;
+      const position = (await this.mediaJobStore.countWaitingAhead(lane, job.createdAt)) + 1;
       const statusMessageId = await this.rubika.sendMessage(chatId, formatQueuedMessage(message, lane, position));
       if (statusMessageId) await this.mediaJobStore.update(job.id, { statusMessageId });
       await this.pairing.refreshTelegramStatus(message.sourceChatId);

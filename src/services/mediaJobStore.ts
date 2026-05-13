@@ -36,6 +36,7 @@ export type MediaJobRecord = MediaJobInput & {
   error?: string;
   attempts: number;
   retryAfter?: Date;
+  createdAt: Date;
 };
 
 export type MediaJobStats = {
@@ -237,6 +238,7 @@ function toMediaJob(job: {
   error: string | null;
   attempts: number;
   retryAfter: Date | null;
+  createdAt: Date;
   updatedAt: Date;
 }): MediaJobRecord {
   return {
@@ -261,5 +263,6 @@ function toMediaJob(job: {
     error: job.error ?? undefined,
     attempts: job.attempts,
     retryAfter: job.retryAfter ?? undefined,
+    createdAt: job.createdAt,
   };
 }
